@@ -83,6 +83,22 @@ class AppStoreBillingLibrary: BillingLibrary {
         }
     }
 
+    /// Opens the App Store subscription management sheet so the user can cancel.
+    /// Falls back to opening the App Store URL if no window scene is available.
+    func showManageSubscriptions() async {
+        guard let scene = UIApplication.shared.connectedScenes
+            .first(where: { $0.activationState == .foregroundActive }) as? UIWindowScene else {
+            let url = URL(string: "https://apps.apple.com/account/subscriptions")!
+            await UIApplication.shared.open(url)
+            return
+        }
+        do {
+            try await AppStore.showManageSubscriptions(in: scene)
+        } catch {
+            print("[BillingLibrary] showManageSubscriptions failed: \(error)")
+        }
+    }
+
     /// StoreKit 2 has no explicit disconnect — cancel the observer task.
     func endConnection() {
         transactionObserverTask?.cancel()
@@ -118,11 +134,26 @@ class AppStoreBillingLibrary: BillingLibrary {
         }
     }
 
-    /// Finishes any transactions left pending from a previous app session.
-    /// Apple recommends iterating `Transaction.unfinished` at launch.
+    /// Finishes any transactions left pending from a previous app session (crash, kill, etc.).
+    /// Tracks revenue with Adjust in case it was missed before the crash, then calls finish().
+    /// Does NOT emit UI updates — entitlement state is already read via currentEntitlements.
     private func processUnfinishedTransactions() async {
         for await result in Transaction.unfinished {
-            await handleTransactionUpdate(result)
+            guard case .verified(let transaction) = result else { continue }
+
+            // Mark processed so Transaction.updates won't re-deliver and double-process.
+            guard processedTransactionIDs.insert(transaction.id).inserted else { continue }
+
+            logTransaction(transaction, tag: "UNFINISHED")
+
+            // Track with Adjust in case the app crashed before this completed last session.
+            if transaction.revocationDate == nil {
+                let record = transaction.toPurchaseRecord()
+                let productDetail = cachedProducts[record.productId]?.toBillingProductDetail()
+                adjustTracker?.trackPurchase(purchase: record, billingProductDetail: productDetail)
+            }
+
+            await transaction.finish()
         }
     }
 
@@ -243,9 +274,9 @@ class AppStoreBillingLibrary: BillingLibrary {
         print("""
         [BillingLibrary] ──── Transaction \(tag) ────
           productId        : \(tx.productID)
-          transactionId    : \(tx.id)            ← changes every renewal
-          originalId       : \(tx.originalID)    ← stable across renewals
-          purchaseDate     : \(purchaseDate)      ← date of THIS renewal
+          transactionId    : \(tx.id)            ← orderId in PurchaseRecord, changes every renewal
+          originalId       : \(tx.originalID)    ← purchaseToken in PurchaseRecord, stable across renewals
+          purchaseDate     : \(purchaseDate)      ← purchaseTime in PurchaseRecord, date of THIS renewal
           originalPurchDate: \(originalPurchDate) ← date of first purchase
           expirationDate   : \(expirationDate)
           revocationDate   : \(revocationDate)
@@ -266,7 +297,6 @@ private extension Transaction {
             purchaseTime: Int64(purchaseDate.timeIntervalSince1970 * 1000),
             orderId: id.description,
             isPurchased: revocationDate == nil,
-            isAcknowledged: true,  // StoreKit 2: always true after transaction.finish()
             expirationTime: expirationDate.map { Int64($0.timeIntervalSince1970 * 1000) }
         )
     }

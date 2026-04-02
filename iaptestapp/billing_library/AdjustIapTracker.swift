@@ -1,18 +1,5 @@
 import Foundation
 
-/// Tracks IAP revenue to Adjust for ad-spend decision-making.
-///
-/// Two tracking paths:
-///
-/// 1. `trackPurchase` — called immediately after a successful purchase.
-///    Logs the first charge only. Skips free trials (price = 0).
-///    Deduped by `cycleKey(token, purchaseTime)`.
-///
-/// 2. `trackPurchases` — called on each app open.
-///    Logs only the subscription cycle the user is currently in.
-///    If the user missed opening the app during a previous cycle, that cycle is
-///    skipped — only the latest active cycle is logged.
-///    Deduped per cycle by `cycleKey(token, chargeTime)`.
 class AdjustIapTracker {
 
     private let eventToken: String
@@ -83,22 +70,9 @@ class AdjustIapTracker {
               let baseParsed = parsePeriod(basePeriod) else { return }
 
         let token = purchase.purchaseToken
-        var chargeTimeMs = purchase.purchaseTime
-
-        // Walk through the intro/trial phase; chargeTimeMs is advanced to the
-        // start of the base-plan period upon return.
-        let latestIntroCycle = processIntroCycles(
-            intro: detail.introductoryOffer,
-            token: token,
-            purchase: purchase,
-            chargeTimeMs: &chargeTimeMs,
-            now: now
-        )
-
-        // Find the latest unlogged base-plan cycle (the one currently active).
-        // If the user is still inside the intro/trial window, chargeTimeMs > now
-        // and this returns nil.
-        let latestBaseCycle = findLatestPendingBaseCycle(
+        let chargeTimeMs = purchase.purchaseTime
+        
+        guard let cycle = findLatestPendingBaseCycle(
             startingAt: chargeTimeMs,
             period: baseParsed,
             price: Double(detail.basePlanPriceAmountMicros) / 1_000_000.0,
@@ -106,11 +80,7 @@ class AdjustIapTracker {
             token: token,
             purchase: purchase,
             now: now
-        )
-
-        // Base cycle takes priority. Fall back to intro cycle only if the user
-        // is still inside the intro phase.
-        guard let cycle = latestBaseCycle ?? latestIntroCycle else { return }
+        ) else { return }
 
         sendToAdjust(
             price: cycle.price,
@@ -122,48 +92,6 @@ class AdjustIapTracker {
         prefs.set(true, forKey: cycle.dedupId)
     }
 
-    /// Advances `chargeTimeMs` past the trial/intro window.
-    /// Returns the latest unlogged paid-intro cycle, or `nil` for a free trial or no intro.
-    private func processIntroCycles(
-        intro: SubscriptionOfferDetail?,
-        token: String,
-        purchase: PurchaseRecord,
-        chargeTimeMs: inout Int64,
-        now: Int64
-    ) -> PendingCycle? {
-        guard let intro, let period = parsePeriod(intro.billingPeriod) else { return nil }
-
-        if intro.isTrial {
-            // Free trial: advance past trial with no charge to log.
-            chargeTimeMs = addPeriod(epochMs: chargeTimeMs, period: period)
-            return nil
-        }
-
-        // Paid intro: walk each discounted cycle, remember the latest unlogged one.
-        var latest: PendingCycle?
-        for _ in 0..<intro.billingCycleCount {
-            if chargeTimeMs > now { break }
-            let next = addPeriod(epochMs: chargeTimeMs, period: period)
-            // Skip purchaseTime — already logged by trackPurchase.
-            if chargeTimeMs > purchase.purchaseTime, intro.priceAmountMicros > 0 {
-                let key = cycleKey(token: token, chargeTimeMs: chargeTimeMs)
-                if !prefs.bool(forKey: key) {
-                    latest = (chargeTimeMs,
-                              Double(intro.priceAmountMicros) / 1_000_000.0,
-                              intro.priceCurrencyCode,
-                              key)
-                }
-            }
-            chargeTimeMs = next
-        }
-        return latest
-    }
-
-    /// Walks base-plan cycles from `startingAt` up to `now` and returns the latest
-    /// unlogged one — which is the cycle the user is currently in.
-    ///
-    /// Cycles that started and ended before `now` without ever being logged are
-    /// naturally overwritten in each iteration, so only the most recent one is returned.
     private func findLatestPendingBaseCycle(
         startingAt start: Int64,
         period: (years: Int, months: Int, days: Int),

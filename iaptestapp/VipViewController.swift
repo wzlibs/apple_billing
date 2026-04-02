@@ -4,10 +4,12 @@ class VipViewController: UIViewController {
 
     private let purchase: PurchaseRecord
     private let detail: BillingProductDetail?
+    private let billingLibrary: BillingLibrary
 
-    init(purchase: PurchaseRecord, detail: BillingProductDetail?) {
-        self.purchase = purchase
-        self.detail   = detail
+    init(purchase: PurchaseRecord, detail: BillingProductDetail?, billingLibrary: BillingLibrary) {
+        self.purchase       = purchase
+        self.detail         = detail
+        self.billingLibrary = billingLibrary
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -68,11 +70,16 @@ class VipViewController: UIViewController {
         navigationController?.popViewController(animated: true)
     }
 
+    @objc private func didTapCancel() {
+        Task { await billingLibrary.showManageSubscriptions() }
+    }
+
     // MARK: - Build UI
 
     private func buildUI() {
         contentStack.addArrangedSubview(makeBadgeCard())
         contentStack.addArrangedSubview(makeReportCard())
+        contentStack.addArrangedSubview(makeCancelButton())
     }
 
     /// Banner ⭐️ VIP
@@ -125,6 +132,17 @@ class VipViewController: UIViewController {
     }
 
     // MARK: - Helpers: UI factories
+
+    private func makeCancelButton() -> UIView {
+        let btn = UIButton(type: .system)
+        btn.setTitle("Huỷ đăng ký", for: .normal)
+        btn.setTitleColor(.systemRed, for: .normal)
+        btn.titleLabel?.font = .systemFont(ofSize: 16, weight: .medium)
+        btn.addTarget(self, action: #selector(didTapCancel), for: .touchUpInside)
+        btn.translatesAutoresizingMaskIntoConstraints = false
+        btn.heightAnchor.constraint(equalToConstant: 44).isActive = true
+        return btn
+    }
 
     private func makeCard(borderColor: UIColor) -> UIView {
         let v = UIView()

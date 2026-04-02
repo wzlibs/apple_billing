@@ -15,5 +15,9 @@ protocol BillingLibrary: AnyObject {
     /// Call from a "Restore Purchases" button.
     func restorePurchases() async
 
+    /// Opens the App Store subscription management sheet so the user can cancel.
+    /// iOS does not allow apps to cancel subscriptions programmatically.
+    func showManageSubscriptions() async
+
     func endConnection()
 }

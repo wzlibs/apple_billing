@@ -4,6 +4,5 @@ struct PurchaseRecord {
     let purchaseTime: Int64        // milliseconds since epoch
     let orderId: String?           // on iOS: transactionID
     let isPurchased: Bool
-    let isAcknowledged: Bool       // on iOS: always true after transaction.finish()
     let expirationTime: Int64?     // milliseconds since epoch; nil for one-time purchases
 }

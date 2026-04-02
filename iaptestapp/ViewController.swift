@@ -154,7 +154,7 @@ class ViewController: UIViewController {
     private func navigateToVip(purchase: PurchaseRecord, detail: BillingProductDetail?) {
         guard !isNavigatingToVip else { return }
         isNavigatingToVip = true
-        let vipVC = VipViewController(purchase: purchase, detail: detail)
+        let vipVC = VipViewController(purchase: purchase, detail: detail, billingLibrary: billingLibrary)
         navigationController?.setViewControllers([self, vipVC], animated: true)
     }
 }
