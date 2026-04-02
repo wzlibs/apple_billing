@@ -10,10 +10,10 @@ class AppStoreBillingLibrary: BillingLibrary {
     private var billingProducts: [String: BillingProduct] = [:]
     private var cachedProducts: [String: Product] = [:]
 
-    /// Transaction IDs finished by `performPurchase` this session.
-    /// Guards the brief window where `Transaction.updates` could also deliver the same
-    /// just-purchased transaction before StoreKit propagates the finish() call.
-    private var handledTransactionIDs: Set<UInt64> = []
+    /// Transaction IDs already processed this session, across all delivery paths
+    /// (performPurchase, Transaction.updates, Transaction.unfinished).
+    /// Whichever path wins the race gets to process; all others skip.
+    private var processedTransactionIDs: Set<UInt64> = []
 
     private let adjustTracker: AdjustIapTracker?
 
@@ -135,8 +135,8 @@ class AppStoreBillingLibrary: BillingLibrary {
             emitUpdate(.error)
 
         case .verified(let transaction):
-            // Skip transactions already finished by performPurchase this session.
-            if handledTransactionIDs.remove(transaction.id) != nil {
+            // Whichever delivery path arrives first wins; all others skip.
+            guard processedTransactionIDs.insert(transaction.id).inserted else {
                 await transaction.finish()
                 return
             }
@@ -197,10 +197,14 @@ class AppStoreBillingLibrary: BillingLibrary {
                 let record = transaction.toPurchaseRecord()
                 let productDetail = cachedProducts[record.productId]?.toBillingProductDetail()
 
-                logTransaction(transaction, tag: "FIRST PURCHASE")
+                // If Transaction.updates already processed this transaction (race condition),
+                // just finish and return — .succeeded was already emitted.
+                guard processedTransactionIDs.insert(transaction.id).inserted else {
+                    await transaction.finish()
+                    return
+                }
 
-                // Mark as handled so the update stream doesn't double-process it.
-                handledTransactionIDs.insert(transaction.id)
+                logTransaction(transaction, tag: "FIRST PURCHASE")
 
                 adjustTracker?.trackPurchase(purchase: record, billingProductDetail: productDetail)
                 await transaction.finish()
