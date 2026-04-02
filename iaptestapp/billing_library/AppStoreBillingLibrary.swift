@@ -10,8 +10,9 @@ class AppStoreBillingLibrary: BillingLibrary {
     private var billingProducts: [String: BillingProduct] = [:]
     private var cachedProducts: [String: Product] = [:]
 
-    /// Transaction IDs processed by `performPurchase` this session.
-    /// Used to prevent double-handling when `Transaction.updates` delivers the same transaction.
+    /// Transaction IDs finished by `performPurchase` this session.
+    /// Guards the brief window where `Transaction.updates` could also deliver the same
+    /// just-purchased transaction before StoreKit propagates the finish() call.
     private var handledTransactionIDs: Set<UInt64> = []
 
     private let adjustTracker: AdjustIapTracker?
@@ -30,10 +31,11 @@ class AppStoreBillingLibrary: BillingLibrary {
         self.purchaseUpdateListener = listener
     }
 
-    /// StoreKit 2 does not require an explicit connection step.
-    /// Starts the transaction observer and returns `.connected` immediately.
+    /// Starts the live transaction observer and finishes any transactions that were left
+    /// unfinished in previous sessions (crash, Ask-to-Buy, SCA, etc.).
     func connect() async -> BillingConnectionResult {
         transactionObserverTask = observeTransactionUpdates()
+        await processUnfinishedTransactions()
         return .connected
     }
 
@@ -49,11 +51,6 @@ class AppStoreBillingLibrary: BillingLibrary {
 
         cachedProducts = skProducts
         let billingProductDetails = skProducts.values.map { $0.toBillingProductDetail() }
-
-        print("[BillingLibrary] Mapped \(billingProductDetails.count) BillingProductDetail(s)")
-        for detail in billingProductDetails {
-            print("[BillingLibrary] BillingProductDetail JSON:\n\(detail.toJSONString())")
-        }
 
         if let tracker = adjustTracker {
             let detailMap = Dictionary(
@@ -76,6 +73,16 @@ class AppStoreBillingLibrary: BillingLibrary {
         Task { await performPurchase(skProduct: skProduct) }
     }
 
+    /// Requests an App Store receipt refresh so purchases made on other devices or
+    /// restored from backup become visible. Call this from a "Restore Purchases" button.
+    func restorePurchases() async {
+        do {
+            try await AppStore.sync()
+        } catch {
+            print("[BillingLibrary] AppStore.sync() failed: \(error)")
+        }
+    }
+
     /// StoreKit 2 has no explicit disconnect — cancel the observer task.
     func endConnection() {
         transactionObserverTask?.cancel()
@@ -88,10 +95,20 @@ class AppStoreBillingLibrary: BillingLibrary {
         purchaseUpdateListener?(update)
     }
 
-    /// Listens to `Transaction.updates` for renewals, background purchases, Ask-to-Buy
-    /// approvals, and unfinished transactions from previous app sessions.
-    ///
-    /// Each verified transaction is processed individually — no full re-fetch needed.
+    /// Returns `true` if the user has a current, non-revoked entitlement for `productID`.
+    private func isEntitled(for productID: String) async -> Bool {
+        for await result in Transaction.currentEntitlements {
+            if case .verified(let tx) = result,
+               tx.productID == productID,
+               tx.revocationDate == nil {
+                return true
+            }
+        }
+        return false
+    }
+
+    /// Listens to `Transaction.updates` for renewals, background purchases, and
+    /// Ask-to-Buy approvals. Apple recommends starting this listener at app launch.
     private func observeTransactionUpdates() -> Task<Void, Never> {
         Task(priority: .background) { [weak self] in
             for await result in Transaction.updates {
@@ -101,7 +118,16 @@ class AppStoreBillingLibrary: BillingLibrary {
         }
     }
 
-    /// Processes a single transaction from the update stream.
+    /// Finishes any transactions left pending from a previous app session.
+    /// Apple recommends iterating `Transaction.unfinished` at launch.
+    private func processUnfinishedTransactions() async {
+        for await result in Transaction.unfinished {
+            await handleTransactionUpdate(result)
+        }
+    }
+
+    /// Core transaction handler — used by both the live update stream and the
+    /// unfinished-transaction sweep. Always calls `finish()` on verified transactions.
     private func handleTransactionUpdate(_ result: VerificationResult<Transaction>) async {
         switch result {
         case .unverified:
@@ -109,15 +135,18 @@ class AppStoreBillingLibrary: BillingLibrary {
             emitUpdate(.error)
 
         case .verified(let transaction):
-            // Skip transactions already handled by performPurchase this session.
+            // Skip transactions already finished by performPurchase this session.
             if handledTransactionIDs.remove(transaction.id) != nil {
                 await transaction.finish()
                 return
             }
 
+            logTransaction(transaction, tag: "RENEWAL/UPDATE")
+
             if transaction.revocationDate != nil {
                 // Subscription was revoked (refund / chargeback).
-                // Caller should re-check entitlements and remove access.
+                // Finish the transaction and signal the caller to re-check entitlements.
+                await transaction.finish()
                 emitUpdate(.error)
                 return
             }
@@ -148,18 +177,27 @@ class AppStoreBillingLibrary: BillingLibrary {
         for await result in Transaction.currentEntitlements {
             guard case .verified(let transaction) = result,
                   transaction.revocationDate == nil else { continue }
+            logTransaction(transaction, tag: "ENTITLEMENT")
             records.append(transaction.toPurchaseRecord())
         }
         return records
     }
 
     private func performPurchase(skProduct: Product) async {
+        // Guard against re-purchasing an already-active subscription.
+        if await isEntitled(for: skProduct.id) {
+            emitUpdate(.alreadyOwned)
+            return
+        }
+
         do {
             let result = try await skProduct.purchase()
             switch result {
             case let .success(.verified(transaction)):
                 let record = transaction.toPurchaseRecord()
                 let productDetail = cachedProducts[record.productId]?.toBillingProductDetail()
+
+                logTransaction(transaction, tag: "FIRST PURCHASE")
 
                 // Mark as handled so the update stream doesn't double-process it.
                 handledTransactionIDs.insert(transaction.id)
@@ -185,6 +223,33 @@ class AppStoreBillingLibrary: BillingLibrary {
             emitUpdate(.error)
         }
     }
+
+    // MARK: - Debug logging
+
+    private func logTransaction(_ tx: Transaction, tag: String) {
+        let df = DateFormatter()
+        df.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        df.timeZone = .current
+
+        let purchaseDate      = df.string(from: tx.purchaseDate)
+        let expirationDate    = tx.expirationDate.map { df.string(from: $0) } ?? "nil"
+        let revocationDate    = tx.revocationDate.map { df.string(from: $0) } ?? "nil"
+        let originalPurchDate = df.string(from: tx.originalPurchaseDate)
+
+        print("""
+        [BillingLibrary] ──── Transaction \(tag) ────
+          productId        : \(tx.productID)
+          transactionId    : \(tx.id)            ← changes every renewal
+          originalId       : \(tx.originalID)    ← stable across renewals
+          purchaseDate     : \(purchaseDate)      ← date of THIS renewal
+          originalPurchDate: \(originalPurchDate) ← date of first purchase
+          expirationDate   : \(expirationDate)
+          revocationDate   : \(revocationDate)
+          productType      : \(tx.productType)
+          environment      : \(tx.environment)
+        ────────────────────────────────────────────
+        """)
+    }
 }
 
 // MARK: - StoreKit → domain model mappers
@@ -197,7 +262,8 @@ private extension Transaction {
             purchaseTime: Int64(purchaseDate.timeIntervalSince1970 * 1000),
             orderId: id.description,
             isPurchased: revocationDate == nil,
-            isAcknowledged: true  // StoreKit 2: always true after transaction.finish()
+            isAcknowledged: true,  // StoreKit 2: always true after transaction.finish()
+            expirationTime: expirationDate.map { Int64($0.timeIntervalSince1970 * 1000) }
         )
     }
 }

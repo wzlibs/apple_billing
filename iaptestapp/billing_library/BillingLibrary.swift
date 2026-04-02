@@ -11,5 +11,9 @@ protocol BillingLibrary: AnyObject {
 
     func purchase(product: BillingProductDetail)
 
+    /// Refreshes the App Store receipt so purchases from other devices become visible.
+    /// Call from a "Restore Purchases" button.
+    func restorePurchases() async
+
     func endConnection()
 }
