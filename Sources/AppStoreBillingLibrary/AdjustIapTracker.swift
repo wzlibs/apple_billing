@@ -1,6 +1,6 @@
 import Foundation
 
-class AdjustIapTracker {
+public class AdjustIapTracker {
 
     private let eventToken: String
     private let prefs: UserDefaults
@@ -10,7 +10,7 @@ class AdjustIapTracker {
     /// Represents a single billable cycle that is pending to be sent to Adjust.
     private typealias PendingCycle = (chargeTimeMs: Int64, price: Double, currency: String, dedupId: String)
 
-    init(eventToken: String) {
+    public init(eventToken: String) {
         self.eventToken = eventToken
         self.prefs = UserDefaults(suiteName: AdjustIapTracker.prefsName) ?? .standard
     }

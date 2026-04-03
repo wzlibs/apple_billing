@@ -1,34 +1,53 @@
 import Foundation
 
-struct BillingProductDetail {
-    let productId: String
-    let name: String
+public struct BillingProductDetail {
+    public let productId: String
+    public let name: String
     /// `"subs"` for auto-renewable subscriptions, `"inapp"` for one-time purchases.
-    let productType: String
-    let description: String
+    public let productType: String
+    public let description: String
 
     // MARK: - One-time purchases
-    let oneTimePurchaseOfferDetails: OneTimePurchaseOfferDetails?
+    public let oneTimePurchaseOfferDetails: OneTimePurchaseOfferDetails?
 
     // MARK: - Subscription base plan
     /// ISO 8601 billing period of the base plan (e.g. `"P1M"`). `nil` for non-subscriptions.
-    let subscriptionPeriod: String?
-    let basePlanFormattedPrice: String?
-    let basePlanPriceAmountMicros: Int64
-    let basePlanCurrencyCode: String?
+    public let subscriptionPeriod: String?
+    public let basePlanFormattedPrice: String?
+    public let basePlanPriceAmountMicros: Int64
+    public let basePlanCurrencyCode: String?
 
     // MARK: - Subscription offers
     /// Introductory offer (free trial or reduced price). At most one is active at a time on iOS.
-    let introductoryOffer: SubscriptionOfferDetail?
+    public let introductoryOffer: SubscriptionOfferDetail?
     /// Promotional offers (offer codes / promo codes).
-    let promotionalOffers: [SubscriptionOfferDetail]
+    public let promotionalOffers: [SubscriptionOfferDetail]
+
+    public init(productId: String, name: String, productType: String, description: String,
+                oneTimePurchaseOfferDetails: OneTimePurchaseOfferDetails?,
+                subscriptionPeriod: String?, basePlanFormattedPrice: String?,
+                basePlanPriceAmountMicros: Int64, basePlanCurrencyCode: String?,
+                introductoryOffer: SubscriptionOfferDetail?,
+                promotionalOffers: [SubscriptionOfferDetail]) {
+        self.productId = productId
+        self.name = name
+        self.productType = productType
+        self.description = description
+        self.oneTimePurchaseOfferDetails = oneTimePurchaseOfferDetails
+        self.subscriptionPeriod = subscriptionPeriod
+        self.basePlanFormattedPrice = basePlanFormattedPrice
+        self.basePlanPriceAmountMicros = basePlanPriceAmountMicros
+        self.basePlanCurrencyCode = basePlanCurrencyCode
+        self.introductoryOffer = introductoryOffer
+        self.promotionalOffers = promotionalOffers
+    }
 }
 
 extension BillingProductDetail {
-    func isSubscription() -> Bool { productType == "subs" }
+    public func isSubscription() -> Bool { productType == "subs" }
 
     /// Formatted price to show on a paywall — intro price if available, otherwise base price.
-    func getFormattedPrice() -> String {
+    public func getFormattedPrice() -> String {
         if isSubscription() {
             return introductoryOffer?.formattedPrice ?? basePlanFormattedPrice ?? ""
         }
@@ -36,17 +55,17 @@ extension BillingProductDetail {
     }
 
     /// Base-plan price in micros — what the user pays after any intro period ends.
-    func getRecurringPriceAmountMicros() -> Int64 {
+    public func getRecurringPriceAmountMicros() -> Int64 {
         if isSubscription() { return basePlanPriceAmountMicros }
         return oneTimePurchaseOfferDetails?.priceAmountMicros ?? 0
     }
 
-    func getRecurringPriceCurrencyCode() -> String {
+    public func getRecurringPriceCurrencyCode() -> String {
         if isSubscription() { return basePlanCurrencyCode ?? "" }
         return oneTimePurchaseOfferDetails?.priceCurrencyCode ?? ""
     }
 
-    func getRecurringPricePerDay(days: Int) -> String {
+    public func getRecurringPricePerDay(days: Int) -> String {
         guard days > 0 else { return "" }
         let micros = getRecurringPriceAmountMicros()
         let currency = getRecurringPriceCurrencyCode()
@@ -55,7 +74,7 @@ extension BillingProductDetail {
         return String(format: "%.2f %@", perDay, currency)
     }
 
-    func toJSONString() -> String {
+    public func toJSONString() -> String {
         func offerDict(_ o: SubscriptionOfferDetail) -> [String: Any] {
             [
                 "offerId":          o.offerId as Any,

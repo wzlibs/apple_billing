@@ -2,7 +2,7 @@ import StoreKit
 import Foundation
 
 @MainActor
-class AppStoreBillingLibrary: BillingLibrary {
+public class AppStoreBillingLibrary: BillingLibrary {
 
     private var purchaseUpdateListener: ((PurchaseUpdate) -> Void)?
     private var transactionObserverTask: Task<Void, Never>?
@@ -17,7 +17,7 @@ class AppStoreBillingLibrary: BillingLibrary {
 
     private let adjustTracker: AdjustIapTracker?
 
-    init(adjustTracker: AdjustIapTracker? = nil) {
+    public init(adjustTracker: AdjustIapTracker? = nil) {
         self.adjustTracker = adjustTracker
     }
 
@@ -27,19 +27,19 @@ class AppStoreBillingLibrary: BillingLibrary {
 
     // MARK: - BillingLibrary
 
-    func setPurchaseUpdateListener(_ listener: ((PurchaseUpdate) -> Void)?) {
+    public func setPurchaseUpdateListener(_ listener: ((PurchaseUpdate) -> Void)?) {
         self.purchaseUpdateListener = listener
     }
 
     /// Starts the live transaction observer and finishes any transactions that were left
     /// unfinished in previous sessions (crash, Ask-to-Buy, SCA, etc.).
-    func connect() async -> BillingConnectionResult {
+    public func connect() async -> BillingConnectionResult {
         transactionObserverTask = observeTransactionUpdates()
         await processUnfinishedTransactions()
         return .connected
     }
 
-    func queryProductDetailsAndPurchases(
+    public func queryProductDetailsAndPurchases(
         products: [BillingProduct]
     ) async -> BillingQueryResult {
         products.forEach { billingProducts[$0.productId] = $0 }
@@ -65,8 +65,8 @@ class AppStoreBillingLibrary: BillingLibrary {
         )
     }
 
-    func purchase(product: BillingProductDetail) {
-        guard let skProduct = cachedProducts[product.productId] else {
+    public func purchase(productId: String) {
+        guard let skProduct = cachedProducts[productId] else {
             emitUpdate(.error)
             return
         }
@@ -75,7 +75,7 @@ class AppStoreBillingLibrary: BillingLibrary {
 
     /// Requests an App Store receipt refresh so purchases made on other devices or
     /// restored from backup become visible. Call this from a "Restore Purchases" button.
-    func restorePurchases() async {
+    public func restorePurchases() async {
         do {
             try await AppStore.sync()
         } catch {
@@ -85,7 +85,7 @@ class AppStoreBillingLibrary: BillingLibrary {
 
     /// Opens the App Store subscription management sheet so the user can cancel.
     /// Falls back to opening the App Store URL if no window scene is available.
-    func showManageSubscriptions() async {
+    public func showManageSubscriptions() async {
         guard let scene = UIApplication.shared.connectedScenes
             .first(where: { $0.activationState == .foregroundActive }) as? UIWindowScene else {
             let url = URL(string: "https://apps.apple.com/account/subscriptions")!
@@ -100,7 +100,7 @@ class AppStoreBillingLibrary: BillingLibrary {
     }
 
     /// StoreKit 2 has no explicit disconnect — cancel the observer task.
-    func endConnection() {
+    public func endConnection() {
         transactionObserverTask?.cancel()
         transactionObserverTask = nil
     }
@@ -186,8 +186,9 @@ class AppStoreBillingLibrary: BillingLibrary {
             let productDetail = cachedProducts[record.productId]?.toBillingProductDetail()
 
             adjustTracker?.trackPurchase(purchase: record, billingProductDetail: productDetail)
-            await transaction.finish()
+
             emitUpdate(.succeeded([PurchasedItem(record: record, productDetail: productDetail)]))
+            await transaction.finish()
         }
     }
 
@@ -281,7 +282,6 @@ class AppStoreBillingLibrary: BillingLibrary {
           expirationDate   : \(expirationDate)
           revocationDate   : \(revocationDate)
           productType      : \(tx.productType)
-          environment      : \(tx.environment)
         ────────────────────────────────────────────
         """)
     }

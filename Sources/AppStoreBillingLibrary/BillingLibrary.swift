@@ -1,5 +1,5 @@
 @MainActor
-protocol BillingLibrary: AnyObject {
+public protocol BillingLibrary: AnyObject {
 
     func setPurchaseUpdateListener(_ listener: ((PurchaseUpdate) -> Void)?)
 
@@ -9,7 +9,7 @@ protocol BillingLibrary: AnyObject {
         products: [BillingProduct]
     ) async -> BillingQueryResult
 
-    func purchase(product: BillingProductDetail)
+    func purchase(productId: String)
 
     /// Refreshes the App Store receipt so purchases from other devices become visible.
     /// Call from a "Restore Purchases" button.
