@@ -9,10 +9,11 @@ public class AppStoreBillingLibrary: BillingLibrary {
 
     private var billingProducts: [String: BillingProduct] = [:]
     private var cachedProducts: [String: Product] = [:]
+    private var pendingUserInitiatedProductIDs: Set<String> = []
 
-    /// Transaction IDs already processed this session, across all delivery paths
+    /// Các transaction ID đã được xử lý trong phiên hiện tại, trên mọi luồng xử lý
     /// (performPurchase, Transaction.updates, Transaction.unfinished).
-    /// Whichever path wins the race gets to process; all others skip.
+    /// Luồng nào thắng race trước sẽ được xử lý, các luồng còn lại sẽ bỏ qua.
     private var processedTransactionIDs: Set<UInt64> = []
 
     private let adjustTracker: AdjustIapTracker?
@@ -31,11 +32,9 @@ public class AppStoreBillingLibrary: BillingLibrary {
         self.purchaseUpdateListener = listener
     }
 
-    /// Starts the live transaction observer and finishes any transactions that were left
-    /// unfinished in previous sessions (crash, Ask-to-Buy, SCA, etc.).
     public func connect() async -> BillingConnectionResult {
-        transactionObserverTask = observeTransactionUpdates()
         await processUnfinishedTransactions()
+        transactionObserverTask = observeTransactionUpdates()
         return .connected
     }
 
@@ -70,11 +69,14 @@ public class AppStoreBillingLibrary: BillingLibrary {
             emitUpdate(.error)
             return
         }
+        pendingUserInitiatedProductIDs.insert(productId)
+        print("[BillingLibrary] purchase() called for productId=\(productId)")
         Task { await performPurchase(skProduct: skProduct) }
     }
 
-    /// Requests an App Store receipt refresh so purchases made on other devices or
-    /// restored from backup become visible. Call this from a "Restore Purchases" button.
+    /// Yêu cầu App Store làm mới receipt để các giao dịch được mua trên thiết bị
+    /// khác hoặc khôi phục từ backup có thể hiển thị. Gọi hàm này từ nút
+    /// "Restore Purchases".
     public func restorePurchases() async {
         do {
             try await AppStore.sync()
@@ -83,8 +85,8 @@ public class AppStoreBillingLibrary: BillingLibrary {
         }
     }
 
-    /// Opens the App Store subscription management sheet so the user can cancel.
-    /// Falls back to opening the App Store URL if no window scene is available.
+    /// Mở màn hình quản lý thuê bao của App Store để người dùng có thể hủy.
+    /// Nếu không có window scene khả dụng thì fallback sang mở URL của App Store.
     public func showManageSubscriptions() async {
         guard let scene = UIApplication.shared.connectedScenes
             .first(where: { $0.activationState == .foregroundActive }) as? UIWindowScene else {
@@ -99,7 +101,7 @@ public class AppStoreBillingLibrary: BillingLibrary {
         }
     }
 
-    /// StoreKit 2 has no explicit disconnect — cancel the observer task.
+    /// StoreKit 2 không có thao tác disconnect tường minh, nên chỉ cần hủy observer task.
     public func endConnection() {
         transactionObserverTask?.cancel()
         transactionObserverTask = nil
@@ -111,7 +113,7 @@ public class AppStoreBillingLibrary: BillingLibrary {
         purchaseUpdateListener?(update)
     }
 
-    /// Returns `true` if the user has a current, non-revoked entitlement for `productID`.
+    /// Trả về `true` nếu người dùng đang có entitlement hợp lệ và chưa bị thu hồi cho `productID`.
     private func isEntitled(for productID: String) async -> Bool {
         for await result in Transaction.currentEntitlements {
             if case .verified(let tx) = result,
@@ -123,8 +125,8 @@ public class AppStoreBillingLibrary: BillingLibrary {
         return false
     }
 
-    /// Listens to `Transaction.updates` for renewals, background purchases, and
-    /// Ask-to-Buy approvals. Apple recommends starting this listener at app launch.
+    /// Lắng nghe `Transaction.updates` cho các lần gia hạn, giao dịch phát sinh nền,
+    /// và các giao dịch Ask-to-Buy được duyệt. Apple khuyến nghị khởi động listener này ngay khi app mở.
     private func observeTransactionUpdates() -> Task<Void, Never> {
         Task(priority: .background) { [weak self] in
             for await result in Transaction.updates {
@@ -134,19 +136,15 @@ public class AppStoreBillingLibrary: BillingLibrary {
         }
     }
 
-    /// Finishes any transactions left pending from a previous app session (crash, kill, etc.).
-    /// Tracks revenue with Adjust in case it was missed before the crash, then calls finish().
-    /// Does NOT emit UI updates — entitlement state is already read via currentEntitlements.
     private func processUnfinishedTransactions() async {
         for await result in Transaction.unfinished {
             guard case .verified(let transaction) = result else { continue }
 
-            // Mark processed so Transaction.updates won't re-deliver and double-process.
+            // Đánh dấu đã xử lý để Transaction.updates không gửi lại và xử lý trùng.
             guard processedTransactionIDs.insert(transaction.id).inserted else { continue }
-
             logTransaction(transaction, tag: "UNFINISHED")
 
-            // Track with Adjust in case the app crashed before this completed last session.
+            // Track với Adjust phòng trường hợp app đã crash trước khi hoàn tất ở phiên trước.
             if transaction.revocationDate == nil {
                 let record = transaction.toPurchaseRecord()
                 let productDetail = cachedProducts[record.productId]?.toBillingProductDetail()
@@ -157,17 +155,26 @@ public class AppStoreBillingLibrary: BillingLibrary {
         }
     }
 
-    /// Core transaction handler — used by both the live update stream and the
-    /// unfinished-transaction sweep. Always calls `finish()` on verified transactions.
+    private func consumeUserInitiatedPurchaseIntent(for productId: String) -> Bool {
+        pendingUserInitiatedProductIDs.remove(productId) != nil
+    }
+
     private func handleTransactionUpdate(_ result: VerificationResult<Transaction>) async {
         switch result {
         case .unverified:
-            // Tampered receipt — do not grant access.
+            print("[BillingLibrary] Transaction.updates received UNVERIFIED transaction")
+            // Receipt bị can thiệp, không cấp quyền truy cập.
             emitUpdate(.error)
 
         case .verified(let transaction):
-            // Whichever delivery path arrives first wins; all others skip.
+            print(
+                "[BillingLibrary] Transaction.updates received VERIFIED transaction id=\(transaction.id) productId=\(transaction.productID)"
+            )
+            // Luồng nào nhận transaction trước sẽ xử lý, các luồng còn lại bỏ qua.
             guard processedTransactionIDs.insert(transaction.id).inserted else {
+                print(
+                    "[BillingLibrary] Transaction.updates skipped duplicate transaction id=\(transaction.id)"
+                )
                 await transaction.finish()
                 return
             }
@@ -175,8 +182,8 @@ public class AppStoreBillingLibrary: BillingLibrary {
             logTransaction(transaction, tag: "RENEWAL/UPDATE")
 
             if transaction.revocationDate != nil {
-                // Subscription was revoked (refund / chargeback).
-                // Finish the transaction and signal the caller to re-check entitlements.
+                // Subscription đã bị thu hồi (refund / chargeback).
+                // Finish transaction và báo cho caller kiểm tra lại entitlements.
                 await transaction.finish()
                 emitUpdate(.error)
                 return
@@ -187,7 +194,16 @@ public class AppStoreBillingLibrary: BillingLibrary {
 
             adjustTracker?.trackPurchase(purchase: record, billingProductDetail: productDetail)
 
-            emitUpdate(.succeeded([PurchasedItem(record: record, productDetail: productDetail)]))
+            if consumeUserInitiatedPurchaseIntent(for: transaction.productID) {
+                print(
+                    "[BillingLibrary] Transaction.updates emitting succeeded for user-initiated purchase productId=\(transaction.productID)"
+                )
+                emitUpdate(.succeeded([PurchasedItem(record: record, productDetail: productDetail)]))
+            } else {
+                print(
+                    "[BillingLibrary] Transaction.updates processed background transaction without emitting UI success for productId=\(transaction.productID)"
+                )
+            }
             await transaction.finish()
         }
     }
@@ -216,8 +232,11 @@ public class AppStoreBillingLibrary: BillingLibrary {
     }
 
     private func performPurchase(skProduct: Product) async {
-        // Guard against re-purchasing an already-active subscription.
+        print("[BillingLibrary] performPurchase started for productId=\(skProduct.id)")
+
         if await isEntitled(for: skProduct.id) {
+            _ = consumeUserInitiatedPurchaseIntent(for: skProduct.id)
+            print("[BillingLibrary] performPurchase blocked because user is already entitled to productId=\(skProduct.id)")
             emitUpdate(.alreadyOwned)
             return
         }
@@ -226,12 +245,16 @@ public class AppStoreBillingLibrary: BillingLibrary {
             let result = try await skProduct.purchase()
             switch result {
             case let .success(.verified(transaction)):
+                print(
+                    "[BillingLibrary] performPurchase received VERIFIED transaction id=\(transaction.id) productId=\(transaction.productID)"
+                )
                 let record = transaction.toPurchaseRecord()
                 let productDetail = cachedProducts[record.productId]?.toBillingProductDetail()
 
-                // If Transaction.updates already processed this transaction (race condition),
-                // just finish and return — .succeeded was already emitted.
                 guard processedTransactionIDs.insert(transaction.id).inserted else {
+                    print(
+                        "[BillingLibrary] performPurchase skipped duplicate transaction id=\(transaction.id)"
+                    )
                     await transaction.finish()
                     return
                 }
@@ -240,27 +263,39 @@ public class AppStoreBillingLibrary: BillingLibrary {
 
                 adjustTracker?.trackPurchase(purchase: record, billingProductDetail: productDetail)
                 await transaction.finish()
-
+                _ = consumeUserInitiatedPurchaseIntent(for: skProduct.id)
+                print(
+                    "[BillingLibrary] performPurchase emitting succeeded for user-initiated purchase productId=\(skProduct.id)"
+                )
                 emitUpdate(.succeeded([PurchasedItem(record: record, productDetail: productDetail)]))
 
             case .success(.unverified):
+                _ = consumeUserInitiatedPurchaseIntent(for: skProduct.id)
+                print("[BillingLibrary] performPurchase received UNVERIFIED transaction for productId=\(skProduct.id)")
                 emitUpdate(.error)
 
             case .pending:
+                print("[BillingLibrary] performPurchase result is PENDING for productId=\(skProduct.id)")
                 emitUpdate(.pending)
 
             case .userCancelled:
+                _ = consumeUserInitiatedPurchaseIntent(for: skProduct.id)
+                print("[BillingLibrary] performPurchase result is USER_CANCELLED for productId=\(skProduct.id)")
                 emitUpdate(.userCanceled)
 
             @unknown default:
+                _ = consumeUserInitiatedPurchaseIntent(for: skProduct.id)
+                print("[BillingLibrary] performPurchase result is UNKNOWN for productId=\(skProduct.id)")
                 emitUpdate(.error)
             }
         } catch {
+            _ = consumeUserInitiatedPurchaseIntent(for: skProduct.id)
+            print("[BillingLibrary] performPurchase threw error for productId=\(skProduct.id): \(error)")
             emitUpdate(.error)
         }
     }
 
-    // MARK: - Debug logging
+    // MARK: - Ghi log debug
 
     private func logTransaction(_ tx: Transaction, tag: String) {
         let df = DateFormatter()
@@ -287,13 +322,13 @@ public class AppStoreBillingLibrary: BillingLibrary {
     }
 }
 
-// MARK: - StoreKit → domain model mappers
+// MARK: - Mapper từ StoreKit sang domain model
 
 private extension Transaction {
     func toPurchaseRecord() -> PurchaseRecord {
         return PurchaseRecord(
             productId: productID,
-            purchaseToken: originalID.description,  // stable across renewals
+            purchaseToken: originalID.description,  // giữ nguyên qua các lần gia hạn
             purchaseTime: Int64(purchaseDate.timeIntervalSince1970 * 1000),
             orderId: id.description,
             isPurchased: revocationDate == nil,
@@ -338,12 +373,12 @@ private extension Product {
         let sub = subscription
         let periodStr = sub.map { billingPeriodString(from: $0.subscriptionPeriod) }
 
-        // Introductory offer — at most one, always offerId = nil on iOS.
+        // Offer giới thiệu: tối đa một cái, và offerId luôn là nil trên iOS.
         let introOffer: SubscriptionOfferDetail? = sub.flatMap { info in
             info.introductoryOffer.map { makeOffer(from: $0, offerId: nil) }
         }
 
-        // Promotional offers (offer codes) — each has a non-nil id.
+        // Offer khuyến mãi (offer code): mỗi offer sẽ có id khác nil.
         let promoOffers: [SubscriptionOfferDetail] = sub?.promotionalOffers
             .map { makeOffer(from: $0, offerId: $0.id) } ?? []
 
