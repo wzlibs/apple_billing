@@ -12,9 +12,18 @@ let package = Package(
             targets: ["AppStoreBillingLibrary"]
         )
     ],
+    dependencies: [
+        .package(
+            url: "https://github.com/adjust/ios_sdk",
+            from: "5.0.0"
+        )
+    ],
     targets: [
         .target(
             name: "AppStoreBillingLibrary",
+            dependencies: [
+                .product(name: "Adjust", package: "ios_sdk")
+            ],
             path: "Sources/AppStoreBillingLibrary"
         )
     ]

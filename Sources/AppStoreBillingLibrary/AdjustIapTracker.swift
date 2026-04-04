@@ -1,4 +1,5 @@
 import Foundation
+import Adjust
 
 public class AdjustIapTracker {
 
@@ -145,18 +146,13 @@ public class AdjustIapTracker {
         productType: String,
         adjustDedupId: String
     ) {
-        // TODO: replace with actual Adjust SDK calls when integrated.
-        // Example with Adjust iOS SDK:
-        //
-        // let event = ADJEvent(eventToken: eventToken)
-        // event?.setRevenue(price, currency: currency)
-        // event?.setProductId(purchase.productId)
-        // event?.setTransactionId(purchase.orderId ?? purchase.purchaseToken)
-        // event?.setDeduplicationId(adjustDedupId)
-        // event?.addCallbackParameter("product_type", value: productType)
-        // Adjust.trackEvent(event)
-        //
-        // iOS: use verifyAndTrackAppStorePurchase instead of verifyAndTrackPlayStorePurchase.
+        let event = ADJEvent(eventToken: eventToken)
+        event?.setRevenue(price, currency: currency)
+        event?.setProductId(purchase.productId)
+        event?.setTransactionId(purchase.orderId ?? purchase.purchaseToken)
+        event?.setDeduplicationId(adjustDedupId)
+        event?.addCallbackParameter("product_type", value: productType)
+        Adjust.trackEvent(event)
 
         print("[AdjustIapTracker] TRACKED | price=\(price) \(currency)" +
               " | productId=\(purchase.productId)" +
