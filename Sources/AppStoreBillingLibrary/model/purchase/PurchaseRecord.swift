@@ -5,14 +5,17 @@ public struct PurchaseRecord {
     public let orderId: String?           // on iOS: transactionID
     public let isPurchased: Bool
     public let expirationTime: Int64?     // milliseconds since epoch; nil for one-time purchases
+    public let originalPurchaseTime: Int64? // milliseconds since epoch; date of the very first purchase
 
     public init(productId: String, purchaseToken: String, purchaseTime: Int64,
-                orderId: String?, isPurchased: Bool, expirationTime: Int64?) {
+                orderId: String?, isPurchased: Bool, expirationTime: Int64?,
+                originalPurchaseTime: Int64? = nil) {
         self.productId = productId
         self.purchaseToken = purchaseToken
         self.purchaseTime = purchaseTime
         self.orderId = orderId
         self.isPurchased = isPurchased
         self.expirationTime = expirationTime
+        self.originalPurchaseTime = originalPurchaseTime
     }
 }

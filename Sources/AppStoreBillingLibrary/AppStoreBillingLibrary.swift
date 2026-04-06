@@ -33,7 +33,6 @@ public class AppStoreBillingLibrary: BillingLibrary {
     }
 
     public func connect() async -> BillingConnectionResult {
-        await processUnfinishedTransactions()
         transactionObserverTask = observeTransactionUpdates()
         return .connected
     }
@@ -50,6 +49,10 @@ public class AppStoreBillingLibrary: BillingLibrary {
 
         cachedProducts = skProducts
         let billingProductDetails = skProducts.values.map { $0.toBillingProductDetail() }
+
+        // Xử lý unfinished transactions sau khi cachedProducts đã có data,
+        // để Adjust có thể track đúng productDetail.
+        await processUnfinishedTransactions()
 
         if let tracker = adjustTracker {
             let detailMap = Dictionary(
@@ -70,7 +73,17 @@ public class AppStoreBillingLibrary: BillingLibrary {
             return
         }
         pendingUserInitiatedProductIDs.insert(productId)
-        print("[BillingLibrary] purchase() called for productId=\(productId)")
+        print("""
+        [BillingLibrary] ──── purchase() PRODUCT INFO ────
+          productId   : \(skProduct.id)
+          displayName : \(skProduct.displayName)
+          description : \(skProduct.description)
+          type        : \(skProduct.type)
+          price       : \(skProduct.price)
+          displayPrice: \(skProduct.displayPrice)
+          isFamilyShareable: \(skProduct.isFamilyShareable)
+        ─────────────────────────────────────────────────────────
+        """)
         Task { await performPurchase(skProduct: skProduct) }
     }
 
@@ -332,7 +345,8 @@ private extension Transaction {
             purchaseTime: Int64(purchaseDate.timeIntervalSince1970 * 1000),
             orderId: id.description,
             isPurchased: revocationDate == nil,
-            expirationTime: expirationDate.map { Int64($0.timeIntervalSince1970 * 1000) }
+            expirationTime: expirationDate.map { Int64($0.timeIntervalSince1970 * 1000) },
+            originalPurchaseTime: Int64(originalPurchaseDate.timeIntervalSince1970 * 1000)
         )
     }
 }

@@ -1,5 +1,5 @@
 import Foundation
-import Adjust
+import AdjustSdk
 
 public class AdjustIapTracker {
 
@@ -23,6 +23,7 @@ public class AdjustIapTracker {
         purchase: PurchaseRecord,
         billingProductDetail: BillingProductDetail?
     ) {
+        print("[AdjustIapTracker] trackPurchase called")
         guard let detail = billingProductDetail else { return }
         let token = purchase.purchaseToken
         let key = cycleKey(token: token, chargeTimeMs: purchase.purchaseTime)
@@ -40,7 +41,7 @@ public class AdjustIapTracker {
         }
 
         sendToAdjust(price: price, currency: currency, purchase: purchase,
-                     productType: detail.productType, adjustDedupId: token)
+                     productType: detail.productType, adjustDedupId: key)
         prefs.set(true, forKey: key)
     }
 
@@ -65,21 +66,27 @@ public class AdjustIapTracker {
         detail: BillingProductDetail,
         now: Int64
     ) {
+        print("[AdjustIapTracker] trackSubscriptionRenewals called")
         guard let basePeriod = detail.subscriptionPeriod,
               detail.basePlanPriceAmountMicros > 0,
               let baseCurrency = detail.basePlanCurrencyCode,
               let baseParsed = parsePeriod(basePeriod) else { return }
 
+        // Bắt đầu từ ngày mua đầu tiên (đầu chu kỳ 1), không phải ngày gia hạn gần nhất.
+        guard let originalTime = purchase.originalPurchaseTime else {
+            print("[AdjustIapTracker] trackSubscriptionRenewals SKIP: missing originalPurchaseTime")
+            return
+        }
+
         let token = purchase.purchaseToken
-        let chargeTimeMs = purchase.purchaseTime
-        
+
         guard let cycle = findLatestPendingBaseCycle(
-            startingAt: chargeTimeMs,
+            startingAt: originalTime,
             period: baseParsed,
             price: Double(detail.basePlanPriceAmountMicros) / 1_000_000.0,
             currency: baseCurrency,
             token: token,
-            purchase: purchase,
+            originalPurchaseTime: originalTime,
             now: now
         ) else { return }
 
@@ -99,7 +106,7 @@ public class AdjustIapTracker {
         price: Double,
         currency: String,
         token: String,
-        purchase: PurchaseRecord,
+        originalPurchaseTime: Int64,
         now: Int64
     ) -> PendingCycle? {
         var chargeTimeMs = start
@@ -107,10 +114,15 @@ public class AdjustIapTracker {
 
         while chargeTimeMs <= now {
             defer { chargeTimeMs = addPeriod(epochMs: chargeTimeMs, period: period) }
-            // Skip purchaseTime — already logged by trackPurchase.
-            guard chargeTimeMs > purchase.purchaseTime else { continue }
+            // Chu kỳ đầu tiên (originalPurchaseTime) đã được xử lý bởi trackPurchase(), bỏ qua.
+            guard chargeTimeMs > originalPurchaseTime else { continue }
             let key = cycleKey(token: token, chargeTimeMs: chargeTimeMs)
             if !prefs.bool(forKey: key) {
+                // Đánh dấu chu kỳ trước đó (đã bị bỏ lỡ) là ĐÃ XỬ LÝ để không gửi lại.
+                if let prev: AdjustIapTracker.PendingCycle = latest {
+                    prefs.set(true, forKey: prev.dedupId)
+                    print("[AdjustIapTracker] trackRenewal MARK (skipped, not sent): \(prev.dedupId)")
+                }
                 latest = (chargeTimeMs, price, currency, key)
             } else {
                 print("[AdjustIapTracker] trackRenewal SKIP (already logged): \(key)")
