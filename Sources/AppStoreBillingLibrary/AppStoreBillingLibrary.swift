@@ -90,11 +90,18 @@ public class AppStoreBillingLibrary: BillingLibrary {
     /// Yêu cầu App Store làm mới receipt để các giao dịch được mua trên thiết bị
     /// khác hoặc khôi phục từ backup có thể hiển thị. Gọi hàm này từ nút
     /// "Restore Purchases".
-    public func restorePurchases() async {
+    public func restorePurchases() async -> [PurchasedItem] {
         do {
             try await AppStore.sync()
         } catch {
             print("[BillingLibrary] AppStore.sync() failed: \(error)")
+        }
+        let records = await fetchCurrentEntitlements()
+        return records.map { record in
+            PurchasedItem(
+                record: record,
+                productDetail: cachedProducts[record.productId]?.toBillingProductDetail()
+            )
         }
     }
 

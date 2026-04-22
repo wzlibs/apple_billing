@@ -13,7 +13,7 @@ public protocol BillingLibrary: AnyObject {
 
     /// Refreshes the App Store receipt so purchases from other devices become visible.
     /// Call from a "Restore Purchases" button.
-    func restorePurchases() async
+    func restorePurchases() async -> [PurchasedItem]
 
     /// Opens the App Store subscription management sheet so the user can cancel.
     /// iOS does not allow apps to cancel subscriptions programmatically.
